@@ -241,8 +241,14 @@
 			 * Expected format:
 			 *   BASE64(salt[16 bytes] + iv[12 bytes] + ciphertext)
 			 */
+
+			function base64ToBytes(value) {
+				const binary = atob(value);
+				return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+			}
+
 			const ENCRYPTED_WEBHOOK =
-				"ATT5Q6DQ9Nr2noa0iCimPy9bPhy5u0cA0c/2/syNaVyl88zkpoiZ31kDGylfoW62YHcxPl4XuP5NIb7n2kECyNLEAsICA9Z7qMp9/CGIazjbQbpauJEc+Ond1uUEw2o2f5UHMCVttegOtQkbYsIWXtSFxP6cdF30ZaeM9oVxjavgEEfEFguc/9O+3FXTxdeT9V4O9t85lPq49pctb5hlpEjXADUZiQ==";
+				"MUfY/GbwNQylWrf3Etx2wwuNftriBbls8TOcXzCaunbBeN7L+w2aRMMvYbrcP9UzJ+CHD+THAx8svYEOemZ1T8txXi1Ex/LBuriILNkI0aiWiADA3Q0kMcq86rvgzGEXlKppyO8xsWrjVrsM4ScFAqaZo6qS4gJUW+WclSDNGC+naBPzsnCm3M+T8HYWkJKqB0v/EYTVD0vdh/N/KJXi0z9x6kxj";
 
 			function base64ToBytes(value) {
 				const binary = atob(value);
@@ -259,15 +265,25 @@
 				}
 
 				try {
-					const encoder = new TextEncoder();
 					const packed = base64ToBytes(ENCRYPTED_WEBHOOK);
 
-					// First 16 bytes = PBKDF2 salt
-					// Next 12 bytes = AES-GCM IV
-					// Remaining bytes = AES-GCM ciphertext
+					/*
+					 * Format:
+					 *
+					 *   16 bytes = salt
+					 *   12 bytes = AES-GCM IV
+					 *   remaining = ciphertext + authentication tag
+					 */
+
+					if (packed.length < 16 + 12 + 16) {
+						throw new Error("Encrypted value is invalid.");
+					}
+
 					const salt = packed.slice(0, 16);
 					const iv = packed.slice(16, 28);
 					const ciphertext = packed.slice(28);
+
+					const encoder = new TextEncoder();
 
 					const passwordKey = await crypto.subtle.importKey(
 						"raw",
@@ -280,24 +296,38 @@
 					const key = await crypto.subtle.deriveKey(
 						{
 							name: "PBKDF2",
-							salt,
+							salt: salt,
 							iterations: 600000,
 							hash: "SHA-256",
 						},
 						passwordKey,
-						{ name: "AES-GCM", length: 256 },
+						{
+							name: "AES-GCM",
+							length: 256,
+						},
 						false,
 						["decrypt"],
 					);
 
 					const plaintext = await crypto.subtle.decrypt(
-						{ name: "AES-GCM", iv },
+						{
+							name: "AES-GCM",
+							iv: iv,
+						},
 						key,
 						ciphertext,
 					);
 
-					return new TextDecoder().decode(plaintext);
+					const webhookUrl = new TextDecoder().decode(plaintext);
+
+					if (!webhookUrl.startsWith("https://discord.com/api/webhooks/")) {
+						throw new Error("Decrypted value is not a Discord webhook URL.");
+					}
+
+					return webhookUrl;
 				} catch (error) {
+					console.error("Webhook decryption error:", error);
+
 					throw new Error(
 						"Invalid password or encrypted webhook configuration.",
 					);
@@ -369,16 +399,16 @@
 					item.className = "file-item";
 
 					item.innerHTML = `
-                <span class="file-name">${escapeHtml(file.name)}</span>
-                <span class="file-size">${formatFileSize(file.size)}</span>
-                <button
-                    class="remove-file"
-                    type="button"
-                    title="Remove file"
-                    style="width:auto;margin:0;padding:0"
-                    data-index="${index}"
-                >×</button>
-            `;
+			             <span class="file-name">${escapeHtml(file.name)}</span>
+			             <span class="file-size">${formatFileSize(file.size)}</span>
+			             <button
+			                 class="remove-file"
+			                 type="button"
+			                 title="Remove file"
+			                 style="width:auto;margin:0;padding:0"
+			                 data-index="${index}"
+			             >×</button>
+			         `;
 
 					fileList.appendChild(item);
 				});
@@ -508,7 +538,6 @@
 					setStatus("Message sent successfully.", "success");
 
 					messageInput.value = "";
-					passwordInput.value = "";
 					selectedFiles = [];
 					renderFiles();
 				} catch (error) {
